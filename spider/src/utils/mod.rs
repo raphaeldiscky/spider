@@ -655,6 +655,9 @@ pub struct PageResponse {
     /// All of the response events mapped with the amount of bytes used.
     pub response_map: Option<HashMap<String, f64>>,
     #[cfg(feature = "chrome")]
+    /// All of the response events mapped with their MIME type, status and resource type.
+    pub response_details: Option<HashMap<String, crate::page::ResponseDetail>>,
+    #[cfg(feature = "chrome")]
     /// All of the request events mapped with the time period of the event sent.
     pub request_map: Option<HashMap<String, f64>>,
     /// The anti-bot tech used.
@@ -2695,6 +2698,12 @@ struct ResponseMap {
     skipped: bool,
     /// The bytes transferred
     bytes_transferred: f64,
+    /// The MIME type of the response.
+    mime_type: String,
+    /// The HTTP status of the response.
+    status: i64,
+    /// The CDP resource type of the request.
+    resource_type: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4316,6 +4325,9 @@ pub async fn fetch_page_html_chrome_base<'h>(
                                             bytes_transferred: (html_source_size as f64)
                                                 + event.response.encoded_data_length,
                                             skipped: true,
+                                            mime_type: event.response.mime_type.clone(),
+                                            status: event.response.status,
+                                            resource_type: event.r#type.as_ref().to_string(),
                                         },
                                     );
                                     continue;
@@ -4346,6 +4358,9 @@ pub async fn fetch_page_html_chrome_base<'h>(
                                 skipped: *MASK_BYTES_INTERCEPTION
                                     && event.response.connection_id == 0.0
                                     && event.response.encoded_data_length <= SKIP_BYTES_AMOUNT,
+                                mime_type: event.response.mime_type.clone(),
+                                status: event.response.status,
+                                resource_type: event.r#type.as_ref().to_string(),
                             },
                         );
                     }
@@ -5833,6 +5848,7 @@ pub async fn fetch_page_html_chrome_base<'h>(
                 // Cap to bound pre-allocation against pages with excessive subresources.
                 let mut _response_map =
                     HashMap::with_capacity(response_map.as_ref().map_or(0, |r| r.len().min(1024)));
+                let mut response_details = HashMap::with_capacity(_response_map.capacity());
 
                 if let Some(response_map) = response_map {
                     if let Some(bytes_map) = bytes_map {
@@ -5857,12 +5873,22 @@ pub async fn fetch_page_html_chrome_base<'h>(
                                 transferred -= item.1.bytes_transferred;
                             }
 
+                            response_details.insert(
+                                item.1.url.clone(),
+                                crate::page::ResponseDetail {
+                                    mime_type: item.1.mime_type,
+                                    status: u16::try_from(item.1.status).unwrap_or_default(),
+                                    resource_type: item.1.resource_type,
+                                    bytes_transferred: b,
+                                },
+                            );
                             _response_map.insert(item.1.url, b);
                         }
                     }
                 }
 
                 page_response.response_map = Some(_response_map);
+                page_response.response_details = Some(response_details);
 
                 if let Some(status) = rs
                     .status_code
