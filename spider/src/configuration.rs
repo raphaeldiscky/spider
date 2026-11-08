@@ -601,6 +601,12 @@ pub struct Configuration {
     /// `chrome` feature. When set, takes priority over `chrome_connection_url`.
     pub chrome_connection_urls: Option<Vec<String>>,
     #[cfg(feature = "chrome")]
+    /// Open pages in the default browser context of a remote Chrome instead of
+    /// an isolated one, so its existing cookies and logins apply. Only used when
+    /// connecting to an existing browser; spider still closes only the tabs it
+    /// opens and never closes the browser or the context.
+    pub chrome_default_context: bool,
+    #[cfg(feature = "chrome")]
     #[cfg_attr(feature = "serde", serde(skip))]
     /// Lazy, lock-free chrome failover instance reused across every
     /// `setup_browser_configuration` call. Built on first use, reset by
@@ -2297,6 +2303,20 @@ impl Configuration {
     #[cfg(not(feature = "chrome"))]
     /// Set the connection url for the chrome instance. This method does nothing if the `chrome` is not enabled.
     pub fn with_chrome_connection(&mut self, _chrome_connection_url: Option<String>) -> &mut Self {
+        self
+    }
+
+    #[cfg(feature = "chrome")]
+    /// Use the remote browser's default context (its cookies and logins) instead
+    /// of creating an isolated context when connecting to an existing Chrome.
+    pub fn with_chrome_default_context(&mut self, default_context: bool) -> &mut Self {
+        self.chrome_default_context = default_context;
+        self
+    }
+
+    #[cfg(not(feature = "chrome"))]
+    /// Use the remote browser's default context. This method does nothing if the `chrome` is not enabled.
+    pub fn with_chrome_default_context(&mut self, _default_context: bool) -> &mut Self {
         self
     }
 
