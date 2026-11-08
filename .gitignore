@@ -20,3 +20,6 @@ spider/tests/fixtures/
 
 # Local Claude Code tooling
 .claude/
+
+# Local spider runs (Taskfile.yml)
+data/
