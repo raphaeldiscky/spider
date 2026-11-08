@@ -870,6 +870,11 @@ pub fn cleanup_invalid_headers(hm: &mut std::collections::HashMap<String, String
     hm.remove("Connection");
     hm.remove("content-length");
     hm.remove("Content-Length");
+    // Network.setExtraHTTPHeaders applies to every request in the tab, and
+    // the emulated navigation values (`sec-fetch-mode: navigate`, ...) make
+    // Chrome fail each subresource with net::ERR_INVALID_ARGUMENT. Chrome
+    // sets correct Sec-Fetch-* metadata per request on its own.
+    hm.retain(|name, _| !name.to_ascii_lowercase().starts_with("sec-fetch-"));
 }
 
 /// Setup the browser configuration.
@@ -1112,61 +1117,67 @@ pub async fn launch_browser_base(
                 browser_dead_signal.store(true, std::sync::atomic::Ordering::Release);
             });
 
-            let mut create_content = CreateBrowserContextParams::default();
-            create_content.dispose_on_detach = Some(true);
-
-            if let Some(ref proxies) = config.proxies {
-                let use_plain_http = proxies.len() >= 2;
-
-                for proxie in proxies.iter() {
-                    if proxie.ignore == crate::configuration::ProxyIgnore::Chrome {
-                        continue;
-                    }
-
-                    let proxie = &proxie.addr;
-
-                    if !proxie.is_empty() {
-                        // pick the socks:// proxy over http if found.
-                        if proxie.starts_with("socks://") {
-                            create_content.proxy_server =
-                                Some(proxie.replacen("socks://", "http://", 1));
-                            // pref this connection
-                            if use_plain_http {
-                                break;
-                            }
-                        }
-
-                        if *LOOP_BACK_PROXY && proxie.starts_with("http://localhost") {
-                            create_content.proxy_bypass_list =
-                                    // https://source.chromium.org/chromium/chromium/src/+/main:net/proxy_resolution/proxy_bypass_rules.cc
-                                    Some("<-loopback>;localhost;[::1]".into());
-                        }
-
-                        create_content.proxy_server = Some(proxie.into());
-                    }
-                }
-            }
-
-            if let Ok(c) = browser.create_browser_context(create_content).await {
-                let _ = browser.send_new_context(c.clone()).await;
-                let _ = context_id.insert(c);
-                if let Some(jar) = jar {
-                    set_cookies(jar, config, url_parsed, &browser).await;
-                }
-                if let Some(id) = &browser.browser_context.id {
-                    let cmd = SetDownloadBehaviorParamsBuilder::default();
-
-                    if let Ok(cmd) = cmd
-                        .behavior(SetDownloadBehaviorBehavior::Deny)
-                        .events_enabled(false)
-                        .browser_context_id(id.clone())
-                        .build()
-                    {
-                        let _ = browser.execute(cmd).await;
-                    }
-                }
+            // A connected browser's default context carries the user's own
+            // cookies and logins; reuse it when asked instead of isolating.
+            if config.chrome_default_context && connected_url.is_some() {
+                log::debug!("chrome: using the remote browser's default context");
             } else {
-                handle.abort();
+                let mut create_content = CreateBrowserContextParams::default();
+                create_content.dispose_on_detach = Some(true);
+
+                if let Some(ref proxies) = config.proxies {
+                    let use_plain_http = proxies.len() >= 2;
+
+                    for proxie in proxies.iter() {
+                        if proxie.ignore == crate::configuration::ProxyIgnore::Chrome {
+                            continue;
+                        }
+
+                        let proxie = &proxie.addr;
+
+                        if !proxie.is_empty() {
+                            // pick the socks:// proxy over http if found.
+                            if proxie.starts_with("socks://") {
+                                create_content.proxy_server =
+                                    Some(proxie.replacen("socks://", "http://", 1));
+                                // pref this connection
+                                if use_plain_http {
+                                    break;
+                                }
+                            }
+
+                            if *LOOP_BACK_PROXY && proxie.starts_with("http://localhost") {
+                                create_content.proxy_bypass_list =
+                                        // https://source.chromium.org/chromium/chromium/src/+/main:net/proxy_resolution/proxy_bypass_rules.cc
+                                        Some("<-loopback>;localhost;[::1]".into());
+                            }
+
+                            create_content.proxy_server = Some(proxie.into());
+                        }
+                    }
+                }
+
+                if let Ok(c) = browser.create_browser_context(create_content).await {
+                    let _ = browser.send_new_context(c.clone()).await;
+                    let _ = context_id.insert(c);
+                    if let Some(jar) = jar {
+                        set_cookies(jar, config, url_parsed, &browser).await;
+                    }
+                    if let Some(id) = &browser.browser_context.id {
+                        let cmd = SetDownloadBehaviorParamsBuilder::default();
+
+                        if let Ok(cmd) = cmd
+                            .behavior(SetDownloadBehaviorBehavior::Deny)
+                            .events_enabled(false)
+                            .browser_context_id(id.clone())
+                            .build()
+                        {
+                            let _ = browser.execute(cmd).await;
+                        }
+                    }
+                } else {
+                    handle.abort();
+                }
             }
 
             Some((browser, handle, context_id, browser_dead, connected_url))
@@ -1249,16 +1260,21 @@ pub(crate) async fn relaunch_browser_at(
         browser_dead_signal.store(true, std::sync::atomic::Ordering::Release);
     });
 
-    // Isolated context so tabs don't collide with the (dead) primary's.
-    let mut create_ctx =
-        chromiumoxide::cdp::browser_protocol::target::CreateBrowserContextParams::default();
-    create_ctx.dispose_on_detach = Some(true);
-    let context_id = match browser.create_browser_context(create_ctx).await {
-        Ok(id) => {
-            let _ = browser.send_new_context(id.clone()).await;
-            Some(id)
+    // Isolated context so tabs don't collide with the (dead) primary's,
+    // unless the caller asked to share the remote default context.
+    let context_id = if config.chrome_default_context {
+        None
+    } else {
+        let mut create_ctx =
+            chromiumoxide::cdp::browser_protocol::target::CreateBrowserContextParams::default();
+        create_ctx.dispose_on_detach = Some(true);
+        match browser.create_browser_context(create_ctx).await {
+            Ok(id) => {
+                let _ = browser.send_new_context(id.clone()).await;
+                Some(id)
+            }
+            Err(_) => None,
         }
-        Err(_) => None,
     };
 
     Some((browser, handle, context_id, browser_dead, Some(ws_url)))
@@ -1888,22 +1904,27 @@ impl HedgeBrowser {
             browser_dead_signal.store(true, std::sync::atomic::Ordering::Release);
         });
 
-        // Create an isolated browser context so tabs don't collide with primary.
-        let mut create_ctx =
-            chromiumoxide::cdp::browser_protocol::target::CreateBrowserContextParams::default();
-        create_ctx.dispose_on_detach = Some(true);
+        // Create an isolated browser context so tabs don't collide with primary,
+        // unless the caller asked to share the remote default context.
+        let context_id = if config.chrome_default_context {
+            None
+        } else {
+            let mut create_ctx =
+                chromiumoxide::cdp::browser_protocol::target::CreateBrowserContextParams::default();
+            create_ctx.dispose_on_detach = Some(true);
 
-        let context_id = match browser.create_browser_context(create_ctx).await {
-            Ok(id) => {
-                let _ = browser.send_new_context(id.clone()).await;
-                Some(id)
-            }
-            Err(e) => {
-                log::debug!(
-                    "[hedge-chrome] browser context creation failed (non-fatal): {:?}",
-                    e
-                );
-                None
+            match browser.create_browser_context(create_ctx).await {
+                Ok(id) => {
+                    let _ = browser.send_new_context(id.clone()).await;
+                    Some(id)
+                }
+                Err(e) => {
+                    log::debug!(
+                        "[hedge-chrome] browser context creation failed (non-fatal): {:?}",
+                        e
+                    );
+                    None
+                }
             }
         };
 
@@ -2184,6 +2205,28 @@ impl Drop for TabCloseGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cleanup_invalid_headers_drops_sec_fetch() {
+        let mut hm: std::collections::HashMap<String, String> = [
+            ("sec-fetch-mode", "navigate"),
+            ("Sec-Fetch-Dest", "document"),
+            ("sec-fetch-site", "none"),
+            ("sec-fetch-user", "?1"),
+            ("Host", "example.com"),
+            ("sec-ch-ua-mobile", "?0"),
+            ("accept-language", "en-US"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        cleanup_invalid_headers(&mut hm);
+
+        let mut kept: Vec<_> = hm.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["accept-language", "sec-ch-ua-mobile"]);
+    }
 
     #[test]
     fn test_handler_config_max_redirects_defaults_to_none() {

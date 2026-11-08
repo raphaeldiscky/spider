@@ -353,6 +353,7 @@ async fn main() {
 
     if let Some(ref chrome_connection_url) = cli.chrome_connection_url {
         website.with_chrome_connection(Some(chrome_connection_url.clone()));
+        website.with_chrome_default_context(cli.chrome_default_context);
     }
 
     if cli.stealth {

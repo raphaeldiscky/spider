@@ -2281,6 +2281,22 @@ impl Metadata {
 //     pub modified_time: Option<CompactString>,
 // }
 
+/// Details of one network response a Chrome page received, keyed by URL in
+/// [`Page::get_response_details`]. Requires the event tracker with responses on.
+#[cfg(feature = "chrome")]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ResponseDetail {
+    /// The MIME type Chrome reported, e.g. `audio/mpeg`.
+    pub mime_type: String,
+    /// The HTTP status code.
+    pub status: u16,
+    /// The CDP resource type, e.g. `Document`, `Media`, `Image`, `Fetch`.
+    pub resource_type: String,
+    /// The bytes transferred, same value as [`Page::get_responses`].
+    pub bytes_transferred: f64,
+}
+
 /// Enumeration of known anti-bot and fraud prevention technologies.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AntiBotTech {
@@ -2500,6 +2516,9 @@ pub struct Page {
     /// All of the response events mapped with the amount of bytes used.
     pub response_map: Option<hashbrown::HashMap<String, f64>>,
     #[cfg(feature = "chrome")]
+    /// All of the response events mapped with their MIME type, status and resource type.
+    pub response_details: Option<hashbrown::HashMap<String, ResponseDetail>>,
+    #[cfg(feature = "chrome")]
     /// All of the request events mapped with the time period of the event sent.
     pub request_map: Option<hashbrown::HashMap<String, f64>>,
     /// The anti-bot tech used.
@@ -2656,6 +2675,9 @@ pub struct Page {
     /// All of the response events mapped with the amount of bytes used.
     pub response_map: Option<hashbrown::HashMap<String, f64>>,
     #[cfg(feature = "chrome")]
+    /// All of the response events mapped with their MIME type, status and resource type.
+    pub response_details: Option<hashbrown::HashMap<String, ResponseDetail>>,
+    #[cfg(feature = "chrome")]
     /// All of the request events mapped with the time period of the event sent.
     pub request_map: Option<hashbrown::HashMap<String, f64>>,
     /// The anti-bot tech used.
@@ -2760,6 +2782,7 @@ pub fn page_assign(page: &mut Page, mut new_page: Page) {
     {
         page.request_map = std::mem::take(&mut new_page.request_map);
         page.response_map = std::mem::take(&mut new_page.response_map);
+        page.response_details = std::mem::take(&mut new_page.response_details);
     }
 
     #[cfg(feature = "cookies")]
@@ -3712,6 +3735,8 @@ pub fn build(url: &str, mut res: PageResponse) -> Page {
             #[cfg(feature = "chrome")]
             response_map: res.response_map,
             #[cfg(feature = "chrome")]
+            response_details: res.response_details,
+            #[cfg(feature = "chrome")]
             request_map: res.request_map,
             anti_bot_tech: res.anti_bot_tech,
             metadata: res.metadata,
@@ -3818,6 +3843,8 @@ pub fn build(url: &str, mut res: PageResponse) -> Page {
         signature: res.signature,
         #[cfg(feature = "chrome")]
         response_map: res.response_map,
+        #[cfg(feature = "chrome")]
+        response_details: res.response_details,
         #[cfg(feature = "chrome")]
         request_map: res.request_map,
         anti_bot_tech: res.anti_bot_tech,
@@ -7328,6 +7355,13 @@ impl Page {
     #[cfg(feature = "chrome")]
     pub fn get_responses(&self) -> &Option<hashbrown::HashMap<String, f64>> {
         &self.response_map
+    }
+
+    /// Get the response events mapped by URL with their MIME type, status and
+    /// resource type, e.g. to find the audio or video a page loaded.
+    #[cfg(feature = "chrome")]
+    pub fn get_response_details(&self) -> &Option<hashbrown::HashMap<String, ResponseDetail>> {
+        &self.response_details
     }
 
     /// Get the metadata found on the page.

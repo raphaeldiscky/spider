@@ -14416,6 +14416,15 @@ impl Website {
         self
     }
 
+    /// Use the remote browser's default context (its cookies and logins) instead of an
+    /// isolated context when connecting to an existing Chrome. This method does nothing
+    /// if the `chrome` is not enabled.
+    pub fn with_chrome_default_context(&mut self, default_context: bool) -> &mut Self {
+        self.configuration
+            .with_chrome_default_context(default_context);
+        self
+    }
+
     /// Set multiple remote Chrome connection URLs for failover. This method does nothing if the `chrome` is not enabled.
     pub fn with_chrome_connections(&mut self, urls: Vec<String>) -> &mut Self {
         self.configuration.with_chrome_connections(urls);

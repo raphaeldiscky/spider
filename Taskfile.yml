@@ -1,0 +1,109 @@
+# Quick commands for running spider_cli locally.
+#
+# Global spider flags go after `--` and are placed before the subcommand, e.g.
+#   task crawl -- --url https://example.com --limit 50 --depth 2
+#   task chrome:scrape -- --url https://example.com/account --limit 1
+# Run `task --list` for everything, `task help` for all spider flags.
+version: "3"
+
+vars:
+  FEATURES: smart regex
+  SPIDER: "{{.ROOT_DIR}}/target/release/spider"
+  CHROME_PORT: '{{.CHROME_PORT | default "9222"}}'
+  CHROME_URL: "http://127.0.0.1:{{.CHROME_PORT}}"
+  CHROME_PROFILE: '{{.CHROME_PROFILE | default (printf "%s/.scraper-chrome" .HOME)}}'
+  DATA_DIR: "{{.ROOT_DIR}}/data"
+  STAMP:
+    sh: date -u +%Y%m%dT%H%M%SZ
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build spider_cli (release) with Chrome, interception and regex support
+    sources:
+      - spider/src/**/*.rs
+      - spider_cli/src/**/*.rs
+      - "**/Cargo.toml"
+      - Cargo.lock
+    generates:
+      - target/release/spider
+    cmds:
+      - cargo build --release -p spider_cli --features "{{.FEATURES}}"
+
+  help:
+    desc: Show all spider_cli flags
+    deps: [build]
+    cmds:
+      - "{{.SPIDER}} --help"
+
+  crawl:
+    desc: "HTTP crawl, print links. Usage: task crawl -- --url URL [--limit N --depth N]"
+    deps: [build]
+    cmds:
+      - "{{.SPIDER}} {{.CLI_ARGS}} crawl --output-links"
+
+  scrape:
+    desc: "HTTP scrape to data/<host>-<time>.jsonl (markdown + links). Usage: task scrape -- --url URL [--limit N]"
+    deps: [build]
+    vars: &out_vars
+      HOST:
+        sh: printf '%s' "{{.CLI_ARGS}}" | grep -oE 'https?://[^/ ]+' | head -1 | sed -E 's#https?://##' || true
+    cmds:
+      - mkdir -p "{{.DATA_DIR}}"
+      - "{{.SPIDER}} {{.CLI_ARGS}} scrape --output-links > '{{.DATA_DIR}}/{{.HOST | default \"site\"}}-{{.STAMP}}.jsonl'"
+      - echo "Wrote {{.DATA_DIR}}/{{.HOST | default "site"}}-{{.STAMP}}.jsonl"
+
+  download:
+    desc: "HTTP download of page HTML to data/<host>-<time>/. Usage: task download -- --url URL [--limit N]"
+    deps: [build]
+    vars: *out_vars
+    cmds:
+      - "{{.SPIDER}} {{.CLI_ARGS}} download --target-destination '{{.DATA_DIR}}/{{.HOST | default \"site\"}}-{{.STAMP}}'"
+      - echo "Wrote {{.DATA_DIR}}/{{.HOST | default "site"}}-{{.STAMP}}/"
+
+  chrome:
+    desc: Launch the dedicated scraper Chrome profile with the DevTools port open (no-op if already up)
+    status:
+      - curl -sf --max-time 2 "{{.CHROME_URL}}/json/version" >/dev/null
+    cmds:
+      - mkdir -p "{{.CHROME_PROFILE}}"
+      - nohup google-chrome --remote-debugging-port={{.CHROME_PORT}} --user-data-dir="{{.CHROME_PROFILE}}" >/dev/null 2>&1 &
+      - for i in $(seq 1 30); do curl -sf --max-time 1 "{{.CHROME_URL}}/json/version" >/dev/null && exit 0; sleep 0.5; done; echo "Chrome did not open port {{.CHROME_PORT}}" >&2; exit 1
+
+  chrome:check:
+    desc: Show the Chrome version behind the DevTools port
+    cmds:
+      - curl -sf --max-time 2 "{{.CHROME_URL}}/json/version" | grep -E '"(Browser|webSocketDebuggerUrl)"'
+
+  chrome:stop:
+    desc: Close the dedicated scraper Chrome profile
+    cmds:
+      - pkill -TERM -f -- "--user-data-dir={{.CHROME_PROFILE}}" || true
+
+  chrome:crawl:
+    desc: "Crawl through your running Chrome (logged-in profile). Usage: task chrome:crawl -- --url URL [--limit N]"
+    deps: [build]
+    cmds:
+      - "{{.SPIDER}} --headless --chrome-connection-url {{.CHROME_URL}} --wait-for-idle-network 30000 {{.CLI_ARGS}} crawl --output-links"
+
+  chrome:scrape:
+    desc: "Scrape through your running Chrome to data/<host>-<time>.jsonl. Usage: task chrome:scrape -- --url URL [--limit N]"
+    deps: [build]
+    vars: *out_vars
+    cmds:
+      - mkdir -p "{{.DATA_DIR}}"
+      - "{{.SPIDER}} --headless --chrome-connection-url {{.CHROME_URL}} --wait-for-idle-network 30000 {{.CLI_ARGS}} scrape --output-links > '{{.DATA_DIR}}/{{.HOST | default \"site\"}}-{{.STAMP}}.jsonl'"
+      - echo "Wrote {{.DATA_DIR}}/{{.HOST | default "site"}}-{{.STAMP}}.jsonl"
+
+  chrome:warc:
+    desc: "Archive through your running Chrome into data/<host>-<time>.warc. Usage: task chrome:warc -- --url URL [--limit N]"
+    deps: [build]
+    vars: *out_vars
+    cmds:
+      - mkdir -p "{{.DATA_DIR}}"
+      - "{{.SPIDER}} --headless --chrome-connection-url {{.CHROME_URL}} --wait-for-idle-network 30000 --warc '{{.DATA_DIR}}/{{.HOST | default \"site\"}}-{{.STAMP}}.warc' {{.CLI_ARGS}} crawl"
+      - echo "Wrote {{.DATA_DIR}}/{{.HOST | default "site"}}-{{.STAMP}}.warc"
