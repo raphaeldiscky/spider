@@ -870,6 +870,11 @@ pub fn cleanup_invalid_headers(hm: &mut std::collections::HashMap<String, String
     hm.remove("Connection");
     hm.remove("content-length");
     hm.remove("Content-Length");
+    // Network.setExtraHTTPHeaders applies to every request in the tab, and
+    // the emulated navigation values (`sec-fetch-mode: navigate`, ...) make
+    // Chrome fail each subresource with net::ERR_INVALID_ARGUMENT. Chrome
+    // sets correct Sec-Fetch-* metadata per request on its own.
+    hm.retain(|name, _| !name.to_ascii_lowercase().starts_with("sec-fetch-"));
 }
 
 /// Setup the browser configuration.
@@ -2200,6 +2205,28 @@ impl Drop for TabCloseGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cleanup_invalid_headers_drops_sec_fetch() {
+        let mut hm: std::collections::HashMap<String, String> = [
+            ("sec-fetch-mode", "navigate"),
+            ("Sec-Fetch-Dest", "document"),
+            ("sec-fetch-site", "none"),
+            ("sec-fetch-user", "?1"),
+            ("Host", "example.com"),
+            ("sec-ch-ua-mobile", "?0"),
+            ("accept-language", "en-US"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        cleanup_invalid_headers(&mut hm);
+
+        let mut kept: Vec<_> = hm.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["accept-language", "sec-ch-ua-mobile"]);
+    }
 
     #[test]
     fn test_handler_config_max_redirects_defaults_to_none() {
